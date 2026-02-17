@@ -666,6 +666,9 @@ function enter_subpatcher(var_name) {
     // Reset preflight check - new context requires new avoid rect check
     avoid_rect_called = false;
 
+    // Sync V8 add-on navigation
+    outlet(2, "nav_enter_subpatcher", var_name);
+
     post("Entered subpatcher: " + var_name + " (depth: " + patcher_stack.length + ")\n");
 }
 
@@ -680,6 +683,9 @@ function exit_subpatcher() {
 
     // Reset preflight check - returning to parent context requires new avoid rect check
     avoid_rect_called = false;
+
+    // Sync V8 add-on navigation
+    outlet(2, "nav_exit_subpatcher");
 
     post("Exited to parent patcher (depth: " + patcher_stack.length + ")\n");
 }
@@ -701,6 +707,9 @@ function enter_parent_patcher() {
 
     // Reset preflight check
     avoid_rect_called = false;
+
+    // Sync V8 add-on navigation
+    outlet(2, "nav_enter_parent");
 
     post("Entered parent patcher (depth: " + patcher_stack.length + ")\n");
 }

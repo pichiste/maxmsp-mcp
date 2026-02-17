@@ -3,6 +3,10 @@ autowatch = 1; // 1
 inlets = 1; // Receive network messages here
 outlets = 2; // For status, responses, etc.
 
+// Patcher navigation state (mirrors max_mcp.js)
+var current_patcher = this.patcher;
+var patcher_stack = [];
+
 function safe_parse_json(str) {
     try {
         return JSON.parse(str);
@@ -74,11 +78,63 @@ function anything() {
             }
             complete_signal_safety(arguments[0]);
             break;
+        case "nav_enter_parent":
+            nav_enter_parent();
+            break;
+        case "nav_enter_subpatcher":
+            if (arguments.length >= 1) {
+                nav_enter_subpatcher(arguments[0]);
+            }
+            break;
+        case "nav_exit_subpatcher":
+            nav_exit_subpatcher();
+            break;
         default:
             // outlet(1, messagename, ...arguments);
             outlet(1, "response", arguments[1]);
     }
 }
+
+// ========================================
+// Patcher navigation (mirrors max_mcp.js state):
+
+function nav_enter_parent() {
+    var parent = current_patcher.parentpatcher;
+    if (!parent) {
+        post("v8: No parent patcher available\n");
+        return;
+    }
+    patcher_stack.push(current_patcher);
+    current_patcher = parent;
+    post("v8: Entered parent patcher (depth: " + patcher_stack.length + ")\n");
+}
+
+function nav_enter_subpatcher(var_name) {
+    var obj = current_patcher.getnamed(var_name);
+    if (!obj) {
+        post("v8: Object not found: " + var_name + "\n");
+        return;
+    }
+    var subpatch = obj.subpatcher();
+    if (!subpatch) {
+        post("v8: Not a subpatcher: " + var_name + "\n");
+        return;
+    }
+    patcher_stack.push(current_patcher);
+    current_patcher = subpatch;
+    post("v8: Entered subpatcher: " + var_name + " (depth: " + patcher_stack.length + ")\n");
+}
+
+function nav_exit_subpatcher() {
+    if (patcher_stack.length === 0) {
+        post("v8: Already at root\n");
+        return;
+    }
+    current_patcher = patcher_stack.pop();
+    post("v8: Exited to parent (depth: " + patcher_stack.length + ")\n");
+}
+
+// ========================================
 
 function add_boxtext(request_id, data){
     var patcher_dict = safe_parse_json(data);
@@ -88,7 +144,7 @@ function add_boxtext(request_id, data){
         outlet(1, "response", JSON.stringify(result));
         return;
     }
-    var p = this.patcher;
+    var p = current_patcher;
 
     patcher_dict.boxes.forEach(function (b) {
         var obj = p.getnamed(b.box.varname);
@@ -131,7 +187,7 @@ function complete_signal_safety(data_str) {
     var data = safe_parse_json(data_str);
     if (!data) return;
 
-    var p = this.patcher;
+    var p = current_patcher;
     var request_id = data.request_id;
     var warnings = data.warnings || [];
     var objects_to_check = data.objects_to_check || [];
@@ -261,7 +317,7 @@ function complete_encapsulate(data_str) {
     var data = safe_parse_json(data_str);
     if (!data) return;
 
-    var p = this.patcher;
+    var p = current_patcher;
     var request_id = data.request_id;
     var subpatcher_varname = data.subpatcher_varname;
     var objects_info = data.objects_info;
@@ -465,7 +521,7 @@ function complete_encapsulate(data_str) {
 }
 
 function autofit_v8(var_name) {
-    var p = this.patcher;
+    var p = current_patcher;
     var obj = p.getnamed(var_name);
 
     if (!obj) {
