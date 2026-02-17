@@ -185,6 +185,20 @@ function anything() {
         case "enter_parent_patcher":
             enter_parent_patcher();
             break;
+        case "list_open_patchers":
+            if (data.request_id) {
+                list_open_patchers(data.request_id);
+            } else {
+                outlet(0, "error", "Missing request_id for list_open_patchers");
+            }
+            break;
+        case "switch_to_patcher":
+            if (data.request_id && data.patcher_name !== undefined) {
+                switch_to_patcher(data.request_id, data.patcher_name);
+            } else {
+                outlet(0, "error", "Missing request_id or patcher_name for switch_to_patcher");
+            }
+            break;
         case "get_patcher_context":
             if (data.request_id) {
                 get_patcher_context(data.request_id);
@@ -712,6 +726,121 @@ function enter_parent_patcher() {
     outlet(2, "nav_enter_parent");
 
     post("Entered parent patcher (depth: " + patcher_stack.length + ")\n");
+}
+
+function find_any_wind() {
+    // Strategy 1: max.frontpatcher (works when Max is active app)
+    var fp = max.frontpatcher;
+    if (fp && fp.wind) return fp.wind;
+
+    // Strategy 2: climb to the TOP-MOST patcher (not just first with a window)
+    // The topmost patcher's window is at the start of the global wind chain
+    var p = this.patcher;
+    var topmost_with_wind = null;
+    while (p) {
+        if (p.wind) topmost_with_wind = p;
+        p = p.parentpatcher;
+    }
+    if (topmost_with_wind) return topmost_with_wind.wind;
+
+    // Strategy 3: try current_patcher
+    if (current_patcher && current_patcher.wind) return current_patcher.wind;
+
+    return null;
+}
+
+function collect_wind_patchers(w, direction, seen, patchers, start_w) {
+    // Walk the wind chain in a given direction ("next" or "prev")
+    while (w) {
+        var p = w.assoc;
+        if (p && !seen[p.name + "|" + p.filepath]) {
+            seen[p.name + "|" + p.filepath] = true;
+            patchers.push({
+                patcher: p,
+                name: p.name || "(unnamed)",
+                filepath: p.filepath || "(unsaved)",
+                is_current: (p === current_patcher)
+            });
+        }
+        w = w[direction];
+        if (!w || w === start_w) break;  // end of list or circular
+    }
+}
+
+function collect_all_patchers() {
+    var patchers = [];
+    var w = find_any_wind();
+
+    if (w) {
+        var seen = {};
+        var start_w = w;
+
+        // Walk forward from starting window
+        collect_wind_patchers(w, "next", seen, patchers, start_w);
+
+        // Walk backward too (wind list may be linear, not circular)
+        var prev_w = start_w.prev;
+        if (prev_w) {
+            collect_wind_patchers(prev_w, "prev", seen, patchers, start_w);
+        }
+    }
+
+    return patchers;
+}
+
+function list_open_patchers(request_id) {
+    var all = collect_all_patchers();
+    // Strip patcher references for JSON output
+    var patchers = [];
+    for (var i = 0; i < all.length; i++) {
+        patchers.push({
+            name: all[i].name,
+            filepath: all[i].filepath,
+            is_current: all[i].is_current
+        });
+    }
+    var results = {"request_id": request_id, "results": patchers};
+    outlet(1, "response", JSON.stringify(results, null, 0));
+}
+
+function switch_to_patcher(request_id, patcher_name) {
+    var all = collect_all_patchers();
+    var found = null;
+
+    for (var i = 0; i < all.length; i++) {
+        if (all[i].name === patcher_name || all[i].filepath === patcher_name) {
+            found = all[i].patcher;
+            break;
+        }
+    }
+
+    if (!found) {
+        var result = {"request_id": request_id, "results": {
+            "success": false,
+            "error": "Patcher not found: " + patcher_name
+        }};
+        outlet(1, "response", JSON.stringify(result, null, 0));
+        return;
+    }
+
+    // Reset navigation stack and set new current patcher
+    patcher_stack = [];
+    current_patcher = found;
+
+    // Reset preflight check
+    avoid_rect_called = false;
+
+    // Sync V8 add-on
+    outlet(2, "nav_switch_to_patcher", patcher_name);
+
+    post("Switched to patcher: " + found.name + "\n");
+
+    var result = {"request_id": request_id, "results": {
+        "success": true,
+        "name": found.name,
+        "filepath": found.filepath || "(unsaved)"
+    }};
+    outlet(1, "response", JSON.stringify(result, null, 0));
 }
 
 function get_patcher_context(request_id) {

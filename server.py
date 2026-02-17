@@ -778,6 +778,43 @@ async def enter_parent_patcher(ctx: Context):
 
 
 @mcp.tool()
+async def list_open_patchers(ctx: Context):
+    """List all open patcher windows in the Max application.
+
+    Returns name, filepath, and whether each patcher is the current context.
+    Use switch_to_patcher to navigate to any listed patcher.
+
+    Returns:
+        list: List of open patchers with name, filepath, and is_current flag.
+    """
+    maxmsp = ctx.request_context.lifespan_context.get("maxmsp")
+    payload = {"action": "list_open_patchers"}
+    response = await maxmsp.send_request(payload)
+    return response
+
+
+@mcp.tool()
+async def switch_to_patcher(ctx: Context, patcher_name: str):
+    """Switch the MCP context to any open patcher window by name or filepath.
+
+    This allows operating on any patcher open in Max, not just the parent
+    of the MCP abstraction. Use list_open_patchers to see available patchers.
+
+    The navigation stack is reset when switching patchers.
+
+    Args:
+        patcher_name (str): The name or filepath of the patcher to switch to.
+
+    Returns:
+        dict: Success status with patcher name and filepath.
+    """
+    maxmsp = ctx.request_context.lifespan_context.get("maxmsp")
+    payload = {"action": "switch_to_patcher", "patcher_name": patcher_name}
+    response = await maxmsp.send_request(payload)
+    return response
+
+
+@mcp.tool()
 async def get_patcher_context(ctx: Context):
     """Get information about the current patcher navigation context.
 

@@ -89,6 +89,11 @@ function anything() {
         case "nav_exit_subpatcher":
             nav_exit_subpatcher();
             break;
+        case "nav_switch_to_patcher":
+            if (arguments.length >= 1) {
+                nav_switch_to_patcher(arguments[0]);
+            }
+            break;
         default:
             // outlet(1, messagename, ...arguments);
             outlet(1, "response", arguments[1]);
@@ -132,6 +137,66 @@ function nav_exit_subpatcher() {
     }
     current_patcher = patcher_stack.pop();
     post("v8: Exited to parent (depth: " + patcher_stack.length + ")\n");
+}
+
+function v8_find_any_wind() {
+    var fp = max.frontpatcher;
+    if (fp && fp.wind) return fp.wind;
+
+    // Climb to TOPMOST parent with a window (not first)
+    // The topmost patcher's window is at the start of the global wind chain
+    var p = this.patcher;
+    var topmost_with_wind = null;
+    while (p) {
+        if (p.wind) topmost_with_wind = p;
+        p = p.parentpatcher;
+    }
+    if (topmost_with_wind) return topmost_with_wind.wind;
+
+    if (current_patcher && current_patcher.wind) return current_patcher.wind;
+    return null;
+}
+
+function v8_find_patcher_by_name(patcher_name) {
+    var w = v8_find_any_wind();
+    if (!w) return null;
+
+    var start_w = w;
+
+    // Walk forward
+    while (w) {
+        var p = w.assoc;
+        if (p && (p.name === patcher_name || p.filepath === patcher_name)) {
+            return p;
+        }
+        w = w.next;
+        if (!w || w === start_w) break;
+    }
+
+    // Walk backward (wind list may be linear)
+    w = start_w.prev;
+    while (w) {
+        var p = w.assoc;
+        if (p && (p.name === patcher_name || p.filepath === patcher_name)) {
+            return p;
+        }
+        w = w.prev;
+        if (!w || w === start_w) break;
+    }
+
+    return null;
+}
+
+function nav_switch_to_patcher(patcher_name) {
+    var found = v8_find_patcher_by_name(patcher_name);
+
+    if (found) {
+        patcher_stack = [];
+        current_patcher = found;
+        post("v8: Switched to patcher: " + found.name + "\n");
+    } else {
+        post("v8: Patcher not found: " + patcher_name + "\n");
+    }
 }
 
 // ========================================
