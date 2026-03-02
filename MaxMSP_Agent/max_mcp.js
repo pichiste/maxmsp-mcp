@@ -729,28 +729,42 @@ function enter_parent_patcher() {
 }
 
 function find_any_wind() {
-    // Strategy 1: max.frontpatcher (works when Max is active app)
-    var fp = max.frontpatcher;
-    if (fp && fp.wind) return fp.wind;
+    // The wind chain is a global front-to-back list of all open windows.
+    // Entry point is max.frontpatcher.wind, but it returns null when Max
+    // isn't the active app. Fix: bring our own window to front first,
+    // then send it back to restore the user's window ordering.
 
-    // Strategy 2: climb to the TOP-MOST patcher (not just first with a window)
-    // The topmost patcher's window is at the start of the global wind chain
+    var fp = max.frontpatcher;
+    if (fp && fp.wind) return { wind: fp.wind, pushed: null };
+
+    // max.frontpatcher failed (Max not active app) — bring our window to front
     var p = this.patcher;
     var topmost_with_wind = null;
     while (p) {
         if (p.wind) topmost_with_wind = p;
         p = p.parentpatcher;
     }
-    if (topmost_with_wind) return topmost_with_wind.wind;
+    if (topmost_with_wind && topmost_with_wind.wind) {
+        topmost_with_wind.wind.bringtofront();
+        fp = max.frontpatcher;
+        if (fp && fp.wind) return { wind: fp.wind, pushed: topmost_with_wind.wind };
+        return { wind: topmost_with_wind.wind, pushed: topmost_with_wind.wind };
+    }
 
-    // Strategy 3: try current_patcher
-    if (current_patcher && current_patcher.wind) return current_patcher.wind;
+    if (current_patcher && current_patcher.wind)
+        return { wind: current_patcher.wind, pushed: null };
 
     return null;
 }
 
-function collect_wind_patchers(w, direction, seen, patchers, start_w) {
-    // Walk the wind chain in a given direction ("next" or "prev")
+function collect_all_patchers() {
+    var patchers = [];
+    var seen = {};
+    var result = find_any_wind();
+    if (!result) return patchers;
+
+    // wind.next is a global front-to-back chain of all open windows.
+    var w = result.wind;
     while (w) {
         var p = w.assoc;
         if (p && !seen[p.name + "|" + p.filepath]) {
@@ -762,27 +776,12 @@ function collect_wind_patchers(w, direction, seen, patchers, start_w) {
                 is_current: (p === current_patcher)
             });
         }
-        w = w[direction];
-        if (!w || w === start_w) break;  // end of list or circular
+        w = w.next;
     }
-}
 
-function collect_all_patchers() {
-    var patchers = [];
-    var w = find_any_wind();
-
-    if (w) {
-        var seen = {};
-        var start_w = w;
-
-        // Walk forward from starting window
-        collect_wind_patchers(w, "next", seen, patchers, start_w);
-
-        // Walk backward too (wind list may be linear, not circular)
-        var prev_w = start_w.prev;
-        if (prev_w) {
-            collect_wind_patchers(prev_w, "prev", seen, patchers, start_w);
-        }
+    // Restore window ordering if we pushed our window to front
+    if (result.pushed) {
+        result.pushed.sendtoback();
     }
 
     return patchers;

@@ -141,50 +141,43 @@ function nav_exit_subpatcher() {
 
 function v8_find_any_wind() {
     var fp = max.frontpatcher;
-    if (fp && fp.wind) return fp.wind;
+    if (fp && fp.wind) return { wind: fp.wind, pushed: null };
 
-    // Climb to TOPMOST parent with a window (not first)
-    // The topmost patcher's window is at the start of the global wind chain
     var p = this.patcher;
     var topmost_with_wind = null;
     while (p) {
         if (p.wind) topmost_with_wind = p;
         p = p.parentpatcher;
     }
-    if (topmost_with_wind) return topmost_with_wind.wind;
+    if (topmost_with_wind && topmost_with_wind.wind) {
+        topmost_with_wind.wind.bringtofront();
+        fp = max.frontpatcher;
+        if (fp && fp.wind) return { wind: fp.wind, pushed: topmost_with_wind.wind };
+        return { wind: topmost_with_wind.wind, pushed: topmost_with_wind.wind };
+    }
 
-    if (current_patcher && current_patcher.wind) return current_patcher.wind;
+    if (current_patcher && current_patcher.wind)
+        return { wind: current_patcher.wind, pushed: null };
     return null;
 }
 
 function v8_find_patcher_by_name(patcher_name) {
-    var w = v8_find_any_wind();
-    if (!w) return null;
+    var result = v8_find_any_wind();
+    if (!result) return null;
 
-    var start_w = w;
-
-    // Walk forward
+    var w = result.wind;
+    var found = null;
     while (w) {
         var p = w.assoc;
         if (p && (p.name === patcher_name || p.filepath === patcher_name)) {
-            return p;
+            found = p;
+            break;
         }
         w = w.next;
-        if (!w || w === start_w) break;
     }
 
-    // Walk backward (wind list may be linear)
-    w = start_w.prev;
-    while (w) {
-        var p = w.assoc;
-        if (p && (p.name === patcher_name || p.filepath === patcher_name)) {
-            return p;
-        }
-        w = w.prev;
-        if (!w || w === start_w) break;
-    }
-
-    return null;
+    if (result.pushed) result.pushed.sendtoback();
+    return found;
 }
 
 function nav_switch_to_patcher(patcher_name) {
