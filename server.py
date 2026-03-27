@@ -815,6 +815,63 @@ async def switch_to_patcher(ctx: Context, patcher_name: str):
 
 
 @mcp.tool()
+async def get_max_console(ctx: Context, lines: int = 100):
+    """Read the Max console output from the internal ring buffer.
+
+    The ring buffer accumulates all Max console messages in real-time as they
+    arrive (post(), object errors, warnings, manual actions — everything).
+    Buffer holds up to 10000 entries, older ones are dropped. Buffer persists
+    even after clear_max_console.
+
+    Does NOT clear anything — use clear_max_console or clear_console_buffer.
+
+    Args:
+        lines (int): Number of most recent lines to return (default 100).
+
+    Returns:
+        dict: total_buffered, returned_lines, and content (formatted log text).
+    """
+    maxmsp = ctx.request_context.lifespan_context.get("maxmsp")
+    payload = {"action": "get_max_console", "lines": lines}
+    response = await maxmsp.send_request(payload)
+    return response
+
+
+@mcp.tool()
+async def clear_max_console(ctx: Context):
+    """Clear the visual Max console window only.
+
+    The internal ring buffer is NOT cleared — older messages remain accessible
+    via get_max_console even after this call. Use clear_console_buffer to also
+    wipe the ring buffer.
+
+    Returns:
+        dict: Success status and current ring buffer entry count.
+    """
+    maxmsp = ctx.request_context.lifespan_context.get("maxmsp")
+    payload = {"action": "clear_max_console"}
+    response = await maxmsp.send_request(payload)
+    return response
+
+
+@mcp.tool()
+async def clear_console_buffer(ctx: Context):
+    """Clear the internal Max console ring buffer.
+
+    The visual Max console window is NOT affected. Use this to start fresh
+    with the AI's accumulated message history (e.g. beginning a new debug
+    session). Reports how many entries were cleared.
+
+    Returns:
+        dict: Success status and number of cleared entries.
+    """
+    maxmsp = ctx.request_context.lifespan_context.get("maxmsp")
+    payload = {"action": "clear_console_buffer"}
+    response = await maxmsp.send_request(payload)
+    return response
+
+
+@mcp.tool()
 async def get_patcher_context(ctx: Context):
     """Get information about the current patcher navigation context.
 
