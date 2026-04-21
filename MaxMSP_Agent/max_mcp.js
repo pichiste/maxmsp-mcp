@@ -1023,42 +1023,36 @@ function send_chunked_to_v8(action, request_id, json_str) {
 }
 
 function collect_objects(obj) {
-    //var keys = Object.keys(obj.varname);
-    //post(typeof obj.varname + "\n");
-    if (obj.varname.substring(0, 8) == "maxmcpid"){
+    // Use getattr() for safer null handling in Max 9 / M4L context
+    var varname = obj.getattr("varname");
+    if (varname && String(varname).substring(0, 8) === "maxmcpid") {
         return;
     }
-    if (!obj.varname){
-        obj.varname = "obj-" + obj_count;
+    if (!varname) {
+        varname = "obj-" + obj_count;
+        obj.varname = varname;
     }
-    obj_count+=1;
+    obj_count += 1;
 
-    var outputs = obj.patchcords.outputs;
-    if (outputs.length){
-        for (var i = 0; i < outputs.length; i++) {
-            lines.push({patchline: {
-                source: [obj.varname, outputs[i].srcoutlet],
-                destination: [outputs[i].dstobject.varname, outputs[i].dstinlet]
-            }})
-        }
+    var patchcords = obj.patchcords;
+    var outputs = (patchcords && patchcords.outputs) ? patchcords.outputs : [];
+    for (var i = 0; i < outputs.length; i++) {
+        var out = outputs[i];
+        // Guard against null dstobject (can crash in Max 9 M4L if destination is invalid)
+        if (!out || !out.dstobject) continue;
+        var dstname = out.dstobject.getattr("varname");
+        if (!dstname) continue;
+        lines.push({patchline: {
+            source: [varname, out.srcoutlet],
+            destination: [dstname, out.dstinlet]
+        }});
     }
-    var attrnames = obj.getattrnames();
-    var attr = {};
-    if (attrnames.length){
-        for (var i = 0; i < attrnames.length; i++) {
-            var name = attrnames[i];
-            var value = obj.getattr(name);
-            attr[name] = value;
-        }
-    }
-    boxes.push({box:{
-        maxclass: obj.maxclass,
-        varname: obj.varname,
+
+    boxes.push({box: {
+        maxclass: obj.getattr("maxclass") || obj.maxclass,
+        varname: varname,
         patching_rect: obj.rect,
-        // numinlets: obj.patchcords.inputs.length,
-        // numoutputs: obj.patchcords.outputs.length,
-        // attributes: attr,
-    }})
+    }});
 }
 
 function get_object_attributes(request_id, var_name) {
