@@ -36,6 +36,10 @@ disable-model-invocation: false
 - Set `trigger_rtl=True` to acknowledge
 - `[t b f]` sends `f` FIRST, then `b`
 
+**random** - needs BANG to trigger (numbers only set range):
+- Set `random_bang=True` to acknowledge
+- Use `[t b]` to convert numbers to bangs before `random`
+
 **coll** - data doesn't persist unless embedded:
 - Always include `@embed 1` in args: `['mycoll', '@embed', 1]`
 

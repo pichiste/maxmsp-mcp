@@ -237,6 +237,7 @@ async def add_max_object(
     extend: bool = False,
     use_live_dial: bool = False,
     trigger_rtl: bool = False,
+    random_bang: bool = False,
 ):
     """Add a new Max object.
 
@@ -258,6 +259,9 @@ async def add_max_object(
                               which supports inline range attributes (@size, @min, @floatoutput, @mode).
         trigger_rtl (bool): Acknowledge that trigger/t objects fire outlets RIGHT-TO-LEFT.
                             The rightmost outlet fires first. Order your arguments accordingly.
+        random_bang (bool): Acknowledge that [random] requires a BANG to trigger output.
+                            Numbers sent to random only set the range, they do NOT trigger output.
+                            Use [t b] to convert numbers to bangs before random.
 
     Returns:
         dict: Result with success/error status.
@@ -373,6 +377,16 @@ async def add_max_object(
             "error": "ORDER ACKNOWLEDGMENT REQUIRED: trigger/t fires outlets RIGHT-TO-LEFT. "
                      "The rightmost argument fires FIRST. For example, [t b f] sends 'f' first, then 'b'. "
                      "Set trigger_rtl=True to acknowledge you understand this.",
+        }
+
+    # Validate random bang trigger acknowledgment
+    if obj_type == "random" and not random_bang:
+        return {
+            "success": False,
+            "error": "TRIGGER ACKNOWLEDGMENT REQUIRED: [random] needs a BANG to output a random number. "
+                     "Numbers sent to [random] only set the range - they do NOT trigger output. "
+                     "To convert numbers to bangs, use [t b] before [random]. "
+                     "Set random_bang=True to acknowledge you understand this.",
         }
 
     # Validate coll has @embed 1 for data persistence
