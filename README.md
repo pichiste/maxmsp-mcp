@@ -95,7 +95,15 @@ uv pip install -r requirements.txt
 
 **For Claude Code (recommended):**
 
-Add to your Claude Code MCP settings (`~/.claude/settings.json` or project `.mcp.json`):
+As of Claude Code v2.1.47, MCP servers must be registered via the CLI (the `mcpServers` key in `~/.claude/settings.json` is no longer read). Run:
+
+```bash
+claude mcp add --scope user maxmsp -- uv --directory /path/to/MaxMSP-MCP-Server run server.py
+```
+
+Verify with `/mcp` inside a Claude Code session.
+
+Alternatively, for project-scoped configuration, create a `.mcp.json` at your project root:
 
 ```json
 {
