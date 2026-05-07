@@ -1,7 +1,11 @@
 
 autowatch = 1; // 1
-inlets = 1; // Receive network messages here
+inlets = 2; // inlet 0: network messages; inlet 1: [console] output (packed list: source, text, type)
 outlets = 3; // For status, responses, etc.
+
+// Console ring buffer — accumulates Max console messages in real-time
+var CONSOLE_BUFFER_MAX = 10000;
+var console_buffer = []; // each entry: {s: source, t: text, tp: type}
 
 // Subpatcher navigation state
 var root_patcher = this.patcher;
@@ -72,6 +76,20 @@ function check_large_patch_warning() {
 
 // Called when a message arrives at inlet 0 (from [udpreceive] or similar)
 function anything() {
+    // Inlet 1: console messages from [pack s s 0]
+    // [pack s s 0] output starts with a symbol, so Max JS routes it here as
+    // an "anything" message where messagename = source, arguments = [text, type]
+    if (this.inlet === 1) {
+        var source = messagename;
+        var text = String(arguments[0] || "");
+        var type = arguments[1] || 0;
+        console_buffer.push({s: source, t: text, tp: type});
+        if (console_buffer.length > CONSOLE_BUFFER_MAX) {
+            console_buffer.shift();
+        }
+        return;
+    }
+
     var msg = arrayfromargs(messagename, arguments).join(" ");
     var data = safe_parse_json(msg);
     if (!data) return;
@@ -181,6 +199,44 @@ function anything() {
             break;
         case "exit_subpatcher":
             exit_subpatcher();
+            break;
+        case "enter_parent_patcher":
+            enter_parent_patcher();
+            break;
+        case "list_open_patchers":
+            if (data.request_id) {
+                list_open_patchers(data.request_id);
+            } else {
+                outlet(0, "error", "Missing request_id for list_open_patchers");
+            }
+            break;
+        case "switch_to_patcher":
+            if (data.request_id && data.patcher_name !== undefined) {
+                switch_to_patcher(data.request_id, data.patcher_name);
+            } else {
+                outlet(0, "error", "Missing request_id or patcher_name for switch_to_patcher");
+            }
+            break;
+        case "get_max_console":
+            if (data.request_id) {
+                get_max_console(data.request_id, data.lines || 100);
+            } else {
+                outlet(0, "error", "Missing request_id for get_max_console");
+            }
+            break;
+        case "clear_max_console":
+            if (data.request_id) {
+                clear_max_console(data.request_id);
+            } else {
+                outlet(0, "error", "Missing request_id for clear_max_console");
+            }
+            break;
+        case "clear_console_buffer":
+            if (data.request_id) {
+                clear_console_buffer(data.request_id);
+            } else {
+                outlet(0, "error", "Missing request_id for clear_console_buffer");
+            }
             break;
         case "get_patcher_context":
             if (data.request_id) {
@@ -663,6 +719,9 @@ function enter_subpatcher(var_name) {
     // Reset preflight check - new context requires new avoid rect check
     avoid_rect_called = false;
 
+    // Sync V8 add-on navigation
+    outlet(2, "nav_enter_subpatcher", var_name);
+
     post("Entered subpatcher: " + var_name + " (depth: " + patcher_stack.length + ")\n");
 }
 
@@ -678,7 +737,204 @@ function exit_subpatcher() {
     // Reset preflight check - returning to parent context requires new avoid rect check
     avoid_rect_called = false;
 
+    // Sync V8 add-on navigation
+    outlet(2, "nav_exit_subpatcher");
+
     post("Exited to parent patcher (depth: " + patcher_stack.length + ")\n");
+}
+
+function enter_parent_patcher() {
+    var parent = current_patcher.parentpatcher;
+    if (!parent) {
+        post("No parent patcher available - already at top level\n");
+        return;
+    }
+
+    // Push current context onto stack so we can return with exit_subpatcher
+    patcher_stack.push({
+        patcher: current_patcher,
+        name: "_parent"
+    });
+
+    current_patcher = parent;
+
+    // Reset preflight check
+    avoid_rect_called = false;
+
+    // Sync V8 add-on navigation
+    outlet(2, "nav_enter_parent");
+
+    post("Entered parent patcher (depth: " + patcher_stack.length + ")\n");
+}
+
+function find_any_wind() {
+    // The wind chain is a global front-to-back list of all open windows.
+    // Entry point is max.frontpatcher.wind, but it returns null when Max
+    // isn't the active app. Fix: bring our own window to front first,
+    // then send it back to restore the user's window ordering.
+
+    var fp = max.frontpatcher;
+    if (fp && fp.wind) return { wind: fp.wind, pushed: null };
+
+    // max.frontpatcher failed (Max not active app) — bring our window to front
+    var p = this.patcher;
+    var topmost_with_wind = null;
+    while (p) {
+        if (p.wind) topmost_with_wind = p;
+        p = p.parentpatcher;
+    }
+    if (topmost_with_wind && topmost_with_wind.wind) {
+        topmost_with_wind.wind.bringtofront();
+        fp = max.frontpatcher;
+        if (fp && fp.wind) return { wind: fp.wind, pushed: topmost_with_wind.wind };
+        return { wind: topmost_with_wind.wind, pushed: topmost_with_wind.wind };
+    }
+
+    if (current_patcher && current_patcher.wind)
+        return { wind: current_patcher.wind, pushed: null };
+
+    return null;
+}
+
+function collect_all_patchers() {
+    var patchers = [];
+    var seen = {};
+    var result = find_any_wind();
+    if (!result) return patchers;
+
+    // wind.next is a global front-to-back chain of all open windows.
+    var w = result.wind;
+    while (w) {
+        var p = w.assoc;
+        if (p && !seen[p.name + "|" + p.filepath]) {
+            seen[p.name + "|" + p.filepath] = true;
+            patchers.push({
+                patcher: p,
+                name: p.name || "(unnamed)",
+                filepath: p.filepath || "(unsaved)",
+                is_current: (p === current_patcher)
+            });
+        }
+        w = w.next;
+    }
+
+    // Restore window ordering if we pushed our window to front
+    if (result.pushed) {
+        result.pushed.sendtoback();
+    }
+
+    return patchers;
+}
+
+function list_open_patchers(request_id) {
+    var all = collect_all_patchers();
+    // Strip patcher references for JSON output
+    var patchers = [];
+    for (var i = 0; i < all.length; i++) {
+        patchers.push({
+            name: all[i].name,
+            filepath: all[i].filepath,
+            is_current: all[i].is_current
+        });
+    }
+    var results = {"request_id": request_id, "results": patchers};
+    outlet(1, "response", JSON.stringify(results, null, 0));
+}
+
+function switch_to_patcher(request_id, patcher_name) {
+    var all = collect_all_patchers();
+    var found = null;
+
+    for (var i = 0; i < all.length; i++) {
+        if (all[i].name === patcher_name || all[i].filepath === patcher_name) {
+            found = all[i].patcher;
+            break;
+        }
+    }
+
+    if (!found) {
+        var result = {"request_id": request_id, "results": {
+            "success": false,
+            "error": "Patcher not found: " + patcher_name
+        }};
+        outlet(1, "response", JSON.stringify(result, null, 0));
+        return;
+    }
+
+    // Reset navigation stack and set new current patcher
+    patcher_stack = [];
+    current_patcher = found;
+
+    // Reset preflight check
+    avoid_rect_called = false;
+
+    // Sync V8 add-on
+    outlet(2, "nav_switch_to_patcher", patcher_name);
+
+    post("Switched to patcher: " + found.name + "\n");
+
+    var result = {"request_id": request_id, "results": {
+        "success": true,
+        "name": found.name,
+        "filepath": found.filepath || "(unsaved)"
+    }};
+    outlet(1, "response", JSON.stringify(result, null, 0));
+}
+
+var CONSOLE_MISSING_ERROR = "[console] object not found. Paste the snippet below into Max, then connect [pack s s 0] output to [js] inlet 1, and reload:\n----------begin_max5_patcher----------\n381.3ocyT91aBBCDF+89onoulsPgglsuJFioVu3pCZIsEGFie2Wuh+AyXLXK\nyLR.JWeN5C+n2cXBwePWoqAK8Ex7vi3wgKiNKvO8sACSTvqE4bKlLUAuqWsk\nF8YUNn1gJbZ69hU57tzTxchWkpMKMf.EOmjLK4w3HBaVLdKaFdMwGhrnizUU\nERUN3Pmv5ddckqGAx0nC8e.OvR6xeMY61WBAyQojE2H53kmNF8GiwRt3MhWi\nGTjBvZ4a.R7.YJaZ.iwYAzlxFLTS+cP84+oLcG2n3E35SKDkKEZkUmC8Q+dj\n7k7lkNcr79a2Dm1KuyFDuiZNkJWOnOL5jco4RU+sJBL.U08eEqtxHNs7mK1H\ncSi0f0IUbmTqtp2uOhv9AaSFosxZVlg5pyeE2CaMRXcmbUx3bUx.2twKK2AF\naS9Wshu3dq13C8bTqXRUHVRqXFXm7T1wsByM95TmuHsxDJ8qm9Ds8aRuFLpJ\nIVFNoEpngFJX+BquGbHSr8yjieP1I63J\n-----------end_max5_patcher-----------";
+
+function get_max_console(request_id, lines) {
+    if (console_buffer.length === 0) {
+        // Check if the [console] object is missing (likely not wired up yet)
+        var consoleObj = this.patcher.getnamed("mcp_console");
+        if (!consoleObj) {
+            var result = {"request_id": request_id, "results": {"error": CONSOLE_MISSING_ERROR}};
+            outlet(1, "response", JSON.stringify(result, null, 0));
+            return;
+        }
+    }
+
+    var tail = console_buffer.slice(-lines);
+    var lines_out = [];
+    for (var i = 0; i < tail.length; i++) {
+        lines_out.push(tail[i].s + ": " + tail[i].t);
+    }
+
+    var result = {"request_id": request_id, "results": {
+        "total_buffered": console_buffer.length,
+        "returned_lines": tail.length,
+        "content": lines_out.join("\n")
+    }};
+    outlet(1, "response", JSON.stringify(result, null, 0));
+}
+
+function clear_max_console(request_id) {
+    // Clears the visual Max console only — ring buffer is preserved
+    var consoleObj = this.patcher.getnamed("mcp_console");
+    if (!consoleObj) {
+        var result = {"request_id": request_id, "results": {"error": CONSOLE_MISSING_ERROR}};
+        outlet(1, "response", JSON.stringify(result, null, 0));
+        return;
+    }
+
+    consoleObj.message("clear");
+
+    var result = {"request_id": request_id, "results": {
+        "success": true,
+        "note": "Visual console cleared. Ring buffer intact (" + console_buffer.length + " entries)."
+    }};
+    outlet(1, "response", JSON.stringify(result, null, 0));
+}
+
+function clear_console_buffer(request_id) {
+    // Clears the JS ring buffer only — visual console unchanged
+    var cleared = console_buffer.length;
+    console_buffer = [];
+    var result = {"request_id": request_id, "results": {
+        "success": true,
+        "cleared_entries": cleared
+    }};
+    outlet(1, "response", JSON.stringify(result, null, 0));
 }
 
 function get_patcher_context(request_id) {
@@ -732,8 +988,8 @@ function get_objects_in_patch(request_id) {
     // var results = {"request_id": request_id, "results": patcher_dict}
     // outlet(1, "response", split_long_string(JSON.stringify(results, null, 2), 2000));
 
-    // use this if has v8:
-    outlet(2, "add_boxtext", request_id, JSON.stringify(patcher_dict, null, 0));
+    // use this if has v8 (chunked to avoid Max 32767 symbol limit):
+    send_chunked_to_v8("add_boxtext", request_id, JSON.stringify(patcher_dict, null, 0));
 }
 
 function get_objects_in_selected(request_id) {
@@ -748,51 +1004,55 @@ function get_objects_in_selected(request_id) {
     patcher_dict["boxes"] = boxes;
     patcher_dict["lines"] = lines;
 
-    // use these if no v8:
-    // var results = {"request_id": request_id, "results": patcher_dict}
-    // outlet(1, "response", split_long_string(JSON.stringify(results, null, 2), 2000));
+    // use this if has v8 (chunked to avoid Max 32767 symbol limit):
+    send_chunked_to_v8("add_boxtext", request_id, JSON.stringify(patcher_dict, null, 0));
+}
 
-    // use this if has v8:
-    outlet(2, "add_boxtext", request_id, JSON.stringify(patcher_dict, null, 0));
+function send_chunked_to_v8(action, request_id, json_str) {
+    var MAX_CHUNK = 16000;  // well under Max's 32767 symbol limit
+    if (json_str.length <= MAX_CHUNK) {
+        outlet(2, action, request_id, json_str);
+    } else {
+        var chunks = split_long_string(json_str, MAX_CHUNK);
+        outlet(2, action + "_start", request_id, chunks.length);
+        for (var i = 0; i < chunks.length; i++) {
+            outlet(2, action + "_chunk", chunks[i]);
+        }
+        outlet(2, action + "_end");
+    }
 }
 
 function collect_objects(obj) {
-    //var keys = Object.keys(obj.varname);
-    //post(typeof obj.varname + "\n");
-    if (obj.varname.substring(0, 8) == "maxmcpid"){
+    // Use getattr() for safer null handling in Max 9 / M4L context
+    var varname = obj.getattr("varname");
+    if (varname && String(varname).substring(0, 8) === "maxmcpid") {
         return;
     }
-    if (!obj.varname){
-        obj.varname = "obj-" + obj_count;
+    if (!varname) {
+        varname = "obj-" + obj_count;
+        obj.varname = varname;
     }
-    obj_count+=1;
+    obj_count += 1;
 
-    var outputs = obj.patchcords.outputs;
-    if (outputs.length){
-        for (var i = 0; i < outputs.length; i++) {
-            lines.push({patchline: {
-                source: [obj.varname, outputs[i].srcoutlet],
-                destination: [outputs[i].dstobject.varname, outputs[i].dstinlet]
-            }})
-        }
+    var patchcords = obj.patchcords;
+    var outputs = (patchcords && patchcords.outputs) ? patchcords.outputs : [];
+    for (var i = 0; i < outputs.length; i++) {
+        var out = outputs[i];
+        // Guard against null dstobject (can crash in Max 9 M4L if destination is invalid)
+        if (!out || !out.dstobject) continue;
+        var dstname = out.dstobject.getattr("varname");
+        if (!dstname) continue;
+        lines.push({patchline: {
+            source: [varname, out.srcoutlet],
+            destination: [dstname, out.dstinlet]
+        }});
     }
-    var attrnames = obj.getattrnames();
-    var attr = {};
-    if (attrnames.length){
-        for (var i = 0; i < attrnames.length; i++) {
-            var name = attrnames[i];
-            var value = obj.getattr(name);
-            attr[name] = value;
-        }
-    }
-    boxes.push({box:{
-        maxclass: obj.maxclass,
-        varname: obj.varname,
+
+    boxes.push({box: {
+        maxclass: obj.getattr("maxclass") || obj.maxclass,
+        varname: varname,
         patching_rect: obj.rect,
-        // numinlets: obj.patchcords.inputs.length,
-        // numoutputs: obj.patchcords.outputs.length,
-        // attributes: attr,
-    }})
+    }});
 }
 
 function get_object_attributes(request_id, var_name) {

@@ -763,6 +763,115 @@ async def exit_subpatcher(ctx: Context):
 
 
 @mcp.tool()
+async def enter_parent_patcher(ctx: Context):
+    """Navigate up to the parent patcher that contains the current patcher.
+
+    This uses Max's parentpatcher API to go above the root level,
+    which is useful when the MCP agent runs inside an abstraction
+    and you need to operate on the parent patch that contains it.
+
+    Use exit_subpatcher to return back down.
+    """
+    maxmsp = ctx.request_context.lifespan_context.get("maxmsp")
+    cmd = {"action": "enter_parent_patcher"}
+    await maxmsp.send_command(cmd)
+
+
+@mcp.tool()
+async def list_open_patchers(ctx: Context):
+    """List all open patcher windows in the Max application.
+
+    Returns name, filepath, and whether each patcher is the current context.
+    Use switch_to_patcher to navigate to any listed patcher.
+
+    Returns:
+        list: List of open patchers with name, filepath, and is_current flag.
+    """
+    maxmsp = ctx.request_context.lifespan_context.get("maxmsp")
+    payload = {"action": "list_open_patchers"}
+    response = await maxmsp.send_request(payload)
+    return response
+
+
+@mcp.tool()
+async def switch_to_patcher(ctx: Context, patcher_name: str):
+    """Switch the MCP context to any open patcher window by name or filepath.
+
+    This allows operating on any patcher open in Max, not just the parent
+    of the MCP abstraction. Use list_open_patchers to see available patchers.
+
+    The navigation stack is reset when switching patchers.
+
+    Args:
+        patcher_name (str): The name or filepath of the patcher to switch to.
+
+    Returns:
+        dict: Success status with patcher name and filepath.
+    """
+    maxmsp = ctx.request_context.lifespan_context.get("maxmsp")
+    payload = {"action": "switch_to_patcher", "patcher_name": patcher_name}
+    response = await maxmsp.send_request(payload)
+    return response
+
+
+@mcp.tool()
+async def get_max_console(ctx: Context, lines: int = 100):
+    """Read the Max console output from the internal ring buffer.
+
+    The ring buffer accumulates all Max console messages in real-time as they
+    arrive (post(), object errors, warnings, manual actions — everything).
+    Buffer holds up to 10000 entries, older ones are dropped. Buffer persists
+    even after clear_max_console.
+
+    Does NOT clear anything — use clear_max_console or clear_console_buffer.
+
+    Args:
+        lines (int): Number of most recent lines to return (default 100).
+
+    Returns:
+        dict: total_buffered, returned_lines, and content (formatted log text).
+    """
+    maxmsp = ctx.request_context.lifespan_context.get("maxmsp")
+    payload = {"action": "get_max_console", "lines": lines}
+    response = await maxmsp.send_request(payload)
+    return response
+
+
+@mcp.tool()
+async def clear_max_console(ctx: Context):
+    """Clear the visual Max console window only.
+
+    The internal ring buffer is NOT cleared — older messages remain accessible
+    via get_max_console even after this call. Use clear_console_buffer to also
+    wipe the ring buffer.
+
+    Returns:
+        dict: Success status and current ring buffer entry count.
+    """
+    maxmsp = ctx.request_context.lifespan_context.get("maxmsp")
+    payload = {"action": "clear_max_console"}
+    response = await maxmsp.send_request(payload)
+    return response
+
+
+@mcp.tool()
+async def clear_console_buffer(ctx: Context):
+    """Clear the internal Max console ring buffer.
+
+    The visual Max console window is NOT affected. Use this to start fresh
+    with the AI's accumulated message history (e.g. beginning a new debug
+    session). Reports how many entries were cleared.
+
+    Returns:
+        dict: Success status and number of cleared entries.
+    """
+    maxmsp = ctx.request_context.lifespan_context.get("maxmsp")
+    payload = {"action": "clear_console_buffer"}
+    response = await maxmsp.send_request(payload)
+    return response
+
+
+@mcp.tool()
 async def get_patcher_context(ctx: Context):
     """Get information about the current patcher navigation context.
 

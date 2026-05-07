@@ -3,6 +3,10 @@ autowatch = 1; // 1
 inlets = 1; // Receive network messages here
 outlets = 2; // For status, responses, etc.
 
+// Patcher navigation state (mirrors max_mcp.js)
+var current_patcher = this.patcher;
+var patcher_stack = [];
+
 function safe_parse_json(str) {
     try {
         return JSON.parse(str);
@@ -22,6 +26,12 @@ function split_long_string(inString, maxLength) {
 }
 
 
+// Chunked transfer buffer for large JSON strings
+var chunk_buffer = "";
+var chunk_request_id = "";
+var chunk_expected = 0;
+var chunk_action = "";
+
 function anything() {
     var a = arrayfromargs(messagename, arguments);
     switch (messagename) {
@@ -31,6 +41,21 @@ function anything() {
                 return;
             }
             add_boxtext(arguments[0], arguments[1]);
+            break;
+        case "add_boxtext_start":
+            chunk_request_id = arguments[0];
+            chunk_expected = arguments[1];
+            chunk_buffer = "";
+            chunk_action = "add_boxtext";
+            break;
+        case "add_boxtext_chunk":
+            chunk_buffer += arguments[0];
+            break;
+        case "add_boxtext_end":
+            add_boxtext(chunk_request_id, chunk_buffer);
+            chunk_buffer = "";
+            chunk_request_id = "";
+            chunk_expected = 0;
             break;
         case "autofit_v8":
             if (arguments.length < 1) {
@@ -53,16 +78,131 @@ function anything() {
             }
             complete_signal_safety(arguments[0]);
             break;
+        case "nav_enter_parent":
+            nav_enter_parent();
+            break;
+        case "nav_enter_subpatcher":
+            if (arguments.length >= 1) {
+                nav_enter_subpatcher(arguments[0]);
+            }
+            break;
+        case "nav_exit_subpatcher":
+            nav_exit_subpatcher();
+            break;
+        case "nav_switch_to_patcher":
+            if (arguments.length >= 1) {
+                nav_switch_to_patcher(arguments[0]);
+            }
+            break;
         default:
             // outlet(1, messagename, ...arguments);
             outlet(1, "response", arguments[1]);
     }
 }
 
-function add_boxtext(request_id, data){
-    // post(patcher_dict + "\n");
-    var patcher_dict = safe_parse_json(data);
+// ========================================
+// Patcher navigation (mirrors max_mcp.js state):
+
+function nav_enter_parent() {
+    var parent = current_patcher.parentpatcher;
+    if (!parent) {
+        post("v8: No parent patcher available\n");
+        return;
+    }
+    patcher_stack.push(current_patcher);
+    current_patcher = parent;
+    post("v8: Entered parent patcher (depth: " + patcher_stack.length + ")\n");
+}
+
+function nav_enter_subpatcher(var_name) {
+    var obj = current_patcher.getnamed(var_name);
+    if (!obj) {
+        post("v8: Object not found: " + var_name + "\n");
+        return;
+    }
+    var subpatch = obj.subpatcher();
+    if (!subpatch) {
+        post("v8: Not a subpatcher: " + var_name + "\n");
+        return;
+    }
+    patcher_stack.push(current_patcher);
+    current_patcher = subpatch;
+    post("v8: Entered subpatcher: " + var_name + " (depth: " + patcher_stack.length + ")\n");
+}
+
+function nav_exit_subpatcher() {
+    if (patcher_stack.length === 0) {
+        post("v8: Already at root\n");
+        return;
+    }
+    current_patcher = patcher_stack.pop();
+    post("v8: Exited to parent (depth: " + patcher_stack.length + ")\n");
+}
+
+function v8_find_any_wind() {
+    var fp = max.frontpatcher;
+    if (fp && fp.wind) return { wind: fp.wind, pushed: null };
+
     var p = this.patcher;
+    var topmost_with_wind = null;
+    while (p) {
+        if (p.wind) topmost_with_wind = p;
+        p = p.parentpatcher;
+    }
+    if (topmost_with_wind && topmost_with_wind.wind) {
+        topmost_with_wind.wind.bringtofront();
+        fp = max.frontpatcher;
+        if (fp && fp.wind) return { wind: fp.wind, pushed: topmost_with_wind.wind };
+        return { wind: topmost_with_wind.wind, pushed: topmost_with_wind.wind };
+    }
+
+    if (current_patcher && current_patcher.wind)
+        return { wind: current_patcher.wind, pushed: null };
+    return null;
+}
+
+function v8_find_patcher_by_name(patcher_name) {
+    var result = v8_find_any_wind();
+    if (!result) return null;
+
+    var w = result.wind;
+    var found = null;
+    while (w) {
+        var p = w.assoc;
+        if (p && (p.name === patcher_name || p.filepath === patcher_name)) {
+            found = p;
+            break;
+        }
+        w = w.next;
+    }
+
+    if (result.pushed) result.pushed.sendtoback();
+    return found;
+}
+
+function nav_switch_to_patcher(patcher_name) {
+    var found = v8_find_patcher_by_name(patcher_name);
+
+    if (found) {
+        patcher_stack = [];
+        current_patcher = found;
+        post("v8: Switched to patcher: " + found.name + "\n");
+    } else {
+        post("v8: Patcher not found: " + patcher_name + "\n");
+    }
+}
+
+// ========================================
+
+function add_boxtext(request_id, data){
+    var patcher_dict = safe_parse_json(data);
+    if (!patcher_dict) {
+        post("add_boxtext: failed to parse JSON (length=" + data.length + ")\n");
+        var result = {"request_id": request_id, "results": {"error": "Failed to parse patcher dictionary"}};
+        outlet(1, "response", JSON.stringify(result));
+        return;
+    }
+    var p = current_patcher;
 
     patcher_dict.boxes.forEach(function (b) {
         var obj = p.getnamed(b.box.varname);
@@ -105,7 +245,7 @@ function complete_signal_safety(data_str) {
     var data = safe_parse_json(data_str);
     if (!data) return;
 
-    var p = this.patcher;
+    var p = current_patcher;
     var request_id = data.request_id;
     var warnings = data.warnings || [];
     var objects_to_check = data.objects_to_check || [];
@@ -235,7 +375,7 @@ function complete_encapsulate(data_str) {
     var data = safe_parse_json(data_str);
     if (!data) return;
 
-    var p = this.patcher;
+    var p = current_patcher;
     var request_id = data.request_id;
     var subpatcher_varname = data.subpatcher_varname;
     var objects_info = data.objects_info;
@@ -439,7 +579,7 @@ function complete_encapsulate(data_str) {
 }
 
 function autofit_v8(var_name) {
-    var p = this.patcher;
+    var p = current_patcher;
     var obj = p.getnamed(var_name);
 
     if (!obj) {
